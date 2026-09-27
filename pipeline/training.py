@@ -1,7 +1,7 @@
 """
 Training stage, with MLflow tracking.
 
-TODO: Complete train_model.
+Fits preprocessing and classification together and records training artifacts.
 """
 
 import logging
@@ -68,7 +68,7 @@ def build_pipeline(model_type: str, feature_columns: list, **params: Any) -> Pip
 
 
 # =============================================================================
-# TODO: Implement train_model
+# train_model
 # =============================================================================
 # Fit a pipeline inside an MLflow run and return (pipeline, run_id).
 #
@@ -96,5 +96,31 @@ def train_model(
     **params: Any,
 ) -> Tuple[Pipeline, str]:
     """Fit a pipeline inside an MLflow run and return it with the run id."""
-    # TODO: implement
-    pass
+    X_train = prepare_features(X_train)
+    feature_columns = list(X_train.columns)
+
+    with mlflow.start_run(run_name=run_name) as run:
+        run_id = run.info.run_id
+        mlflow.log_param("model_type", model_type)
+        mlflow.log_param("n_features", len(feature_columns))
+        mlflow.log_param("n_train_rows", len(X_train))
+        for key, value in params.items():
+            mlflow.log_param(key, value)
+
+        if data_stats:
+            for key, value in data_stats.items():
+                mlflow.log_param(f"data_{key}", value)
+        if validation_report:
+            mlflow.log_dict(validation_report, "validation_report.json")
+            mlflow.set_tag("validation_passed", validation_report["passed"])
+
+        mlflow.log_dict({"features": feature_columns}, "feature_columns.json")
+        pipeline = build_pipeline(model_type, feature_columns, **params)
+        pipeline.fit(X_train, y_train)
+        mlflow.sklearn.log_model(
+            sk_model=pipeline,
+            artifact_path="model",
+            input_example=X_train.head(3).astype("float64"),
+        )
+
+    return pipeline, run_id
