@@ -1,7 +1,7 @@
 """
 Data validation stage — the quality gate in front of training.
 
-TODO: Complete the three level functions and the orchestrator.
+Checks schema, statistics and semantics before training.
 """
 
 import logging
@@ -40,7 +40,7 @@ RANGES: Dict[str, tuple] = {
 
 
 # =============================================================================
-# TODO 1: Implement validate_schema — level 1
+# validate_schema — level 1
 # =============================================================================
 # "Is the data shaped the way the code expects?"
 #
@@ -57,19 +57,19 @@ RANGES: Dict[str, tuple] = {
 
 def validate_schema(df: pd.DataFrame) -> List[str]:
     """Level 1 — are the expected columns present, with usable types?"""
-    # TODO: implement
-    #
-    # errors = []
-    # missing = [c for c in ??? if c not in df.columns]
-    # if missing:
-    #     errors.append(f"missing columns: {missing}")
-    # ...
-    # return errors
-    return []
+    errors = []
+    required = RAW_FEATURES + [TARGET]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        errors.append(f"missing columns: {missing}")
+    for col in required:
+        if col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
+            errors.append(f"{col}: expected numeric dtype, got {df[col].dtype}")
+    return errors
 
 
 # =============================================================================
-# TODO 2: Implement validate_statistics — level 2
+# validate_statistics — level 2
 # =============================================================================
 # "Is the shape of the distribution what training assumes?"
 #
@@ -85,12 +85,26 @@ def validate_schema(df: pd.DataFrame) -> List[str]:
 
 def validate_statistics(df: pd.DataFrame) -> List[str]:
     """Level 2 — is the shape of the data what training assumes?"""
-    # TODO: implement
-    return []
+    errors = []
+    if len(df) < MIN_ROWS:
+        errors.append(f"too few rows: {len(df)}; minimum is {MIN_ROWS}")
+    for col, fraction in df.isna().mean().items():
+        if fraction > MAX_MISSING_FRACTION:
+            errors.append(
+                f"{col}: missing fraction {fraction:.4f} exceeds {MAX_MISSING_FRACTION}"
+            )
+    if TARGET in df.columns and pd.api.types.is_numeric_dtype(df[TARGET]):
+        positive_rate = df[TARGET].mean()
+        if pd.isna(positive_rate) or not MIN_POSITIVE_RATE <= positive_rate <= MAX_POSITIVE_RATE:
+            errors.append(
+                f"{TARGET}: positive rate {positive_rate} outside "
+                f"[{MIN_POSITIVE_RATE}, {MAX_POSITIVE_RATE}]"
+            )
+    return errors
 
 
 # =============================================================================
-# TODO 3: Implement validate_semantics — level 3
+# validate_semantics — level 3
 # =============================================================================
 # "Do the values mean what the business says they mean?"
 #
@@ -104,12 +118,27 @@ def validate_statistics(df: pd.DataFrame) -> List[str]:
 
 def validate_semantics(df: pd.DataFrame) -> List[str]:
     """Level 3 — do the values mean what the business says they mean?"""
-    # TODO: implement
-    return []
+    errors = []
+    for col, allowed in DOMAINS.items():
+        if col in df.columns:
+            values = df[col].dropna()
+            invalid = values[~values.isin(allowed)].unique().tolist()
+            if invalid:
+                errors.append(f"{col}: values {invalid} outside allowed domain {sorted(allowed)}")
+    for col, (lo, hi) in RANGES.items():
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+            values = df[col].dropna()
+            if ((values < lo) | (values > hi)).any():
+                errors.append(f"{col}: values outside [{lo}, {hi}]")
+    for col in df.columns:
+        if col.startswith("PAY_AMT") and pd.api.types.is_numeric_dtype(df[col]):
+            if (df[col] < 0).any():
+                errors.append(f"{col}: contains negative payments")
+    return errors
 
 
 # =============================================================================
-# TODO 4: Implement validate_dataset
+# validate_dataset
 # =============================================================================
 # Requirements:
 #   - run all three levels and concatenate their errors
@@ -125,5 +154,21 @@ def validate_semantics(df: pd.DataFrame) -> List[str]:
 
 def validate_dataset(df: pd.DataFrame, raise_on_error: bool = True) -> Dict[str, Any]:
     """Run all three levels and return a report."""
-    # TODO: implement
-    pass
+    schema_errors = validate_schema(df)
+    statistical_errors = validate_statistics(df)
+    semantic_errors = validate_semantics(df)
+    errors = schema_errors + statistical_errors + semantic_errors
+    report = {
+        "passed": not errors,
+        "n_rows": len(df),
+        "n_columns": len(df.columns),
+        "schema_errors": schema_errors,
+        "statistical_errors": statistical_errors,
+        "semantic_errors": semantic_errors,
+        "n_errors": len(errors),
+    }
+    for error in errors:
+        logger.error(error)
+    if errors and raise_on_error:
+        raise DataValidationError("Data validation failed: " + "; ".join(errors))
+    return report
