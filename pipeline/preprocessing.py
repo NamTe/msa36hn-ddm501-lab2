@@ -9,7 +9,7 @@ Two things happen here, and keeping them straight matters:
                         the model Pipeline, so scaling and encoding are FITTED ON
                         TRAINING DATA ONLY and travel with the model.
 
-TODO: Complete add_derived_features and build_preprocessor.
+Provides domain features and an unfitted model preprocessor.
 """
 
 import logging
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# TODO 1: Implement add_derived_features
+# add_derived_features
 # =============================================================================
 # Create the six columns listed in config.DERIVED_FEATURES. These encode what a
 # credit analyst would compute by hand, and they matter more than the model
@@ -64,17 +64,23 @@ logger = logging.getLogger(__name__)
 
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add the six engineered features listed in config.DERIVED_FEATURES."""
-    # TODO: implement
-    #
-    # out = df.copy()
-    # avg_bill = out[BILL_FEATURES].mean(axis=1)
-    # ...
-    # return out
-    pass
+    out = df.copy()
+    avg_bill = out[BILL_FEATURES].mean(axis=1)
+    out["utilisation_ratio"] = (
+        avg_bill / out["LIMIT_BAL"].replace(0, np.nan)
+    ).clip(0, 5)
+    out["payment_ratio"] = (
+        out["PAY_AMT1"] / out["BILL_AMT1"].replace(0, np.nan)
+    ).clip(0, 5)
+    out["max_delay"] = out[PAY_FEATURES].max(axis=1)
+    out["n_months_delayed"] = (out[PAY_FEATURES] > 0).sum(axis=1)
+    out["avg_bill_amt"] = avg_bill
+    out["avg_pay_amt"] = out[PAY_AMT_FEATURES].mean(axis=1)
+    return out
 
 
 # =============================================================================
-# TODO 2: Implement build_preprocessor
+# build_preprocessor
 # =============================================================================
 # Return an UNFITTED ColumnTransformer that:
 #   - one-hot encodes the columns in CATEGORICAL_FEATURES that are present,
@@ -94,8 +100,20 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
 #
 def build_preprocessor(feature_columns: List[str]) -> ColumnTransformer:
     """Unfitted transformer: one-hot the categoricals, impute and scale the rest."""
-    # TODO: implement
-    pass
+    categorical_columns = [c for c in feature_columns if c in CATEGORICAL_FEATURES]
+    numeric_columns = [c for c in feature_columns if c not in CATEGORICAL_FEATURES]
+    numeric_pipeline = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+    return ColumnTransformer(
+        transformers=[
+            ("categorical", OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+             categorical_columns),
+            ("numeric", numeric_pipeline, numeric_columns),
+        ],
+        remainder="drop",
+    )
 
 
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
