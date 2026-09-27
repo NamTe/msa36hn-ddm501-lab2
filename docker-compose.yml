@@ -52,7 +52,8 @@ services:
   #   volumes      the named volume mlflow_data mounted at /mlflow
   #   command      mlflow server
   #                  --backend-store-uri sqlite:////mlflow/mlflow.db
-  #                  --default-artifact-root /mlflow/artifacts
+  #                  --serve-artifacts --artifacts-destination /mlflow/artifacts
+  #                  --default-artifact-root mlflow-artifacts:/
   #                  --host 0.0.0.0 --port 5000
   #   healthcheck  hit /health, every 15s, 10s timeout, 5 retries,
   #                20s start_period
@@ -77,8 +78,11 @@ services:
       - server
       - --backend-store-uri
       - sqlite:////mlflow/mlflow.db
-      - --default-artifact-root
+      - --serve-artifacts
+      - --artifacts-destination
       - /mlflow/artifacts
+      - --default-artifact-root
+      - mlflow-artifacts:/
       - --host
       - 0.0.0.0
       - --port
