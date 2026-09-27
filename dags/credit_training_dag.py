@@ -60,7 +60,7 @@ def ingest(**context):
 
 
 # =============================================================================
-# TODO 1: Implement validate
+# validate
 # =============================================================================
 # Requirements:
 #   - pull "run_dir" from XCom, read run_dir/"raw.parquet"
@@ -74,12 +74,20 @@ def ingest(**context):
 
 def validate(**context):
     """Quality gate on the data. Raising here stops the DAG before training."""
-    # TODO: implement
-    pass
+    import pandas as pd
+
+    from pipeline.validation import validate_dataset
+
+    ti = context["ti"]
+    run_dir = Path(ti.xcom_pull(task_ids="ingest", key="run_dir"))
+    df = pd.read_parquet(run_dir / "raw.parquet")
+    report = validate_dataset(df, raise_on_error=True)
+    (run_dir / "validation_report.json").write_text(json.dumps(report, indent=2))
+    ti.xcom_push(key="validation_report", value=report)
 
 
 # =============================================================================
-# TODO 2: Implement train
+# train
 # =============================================================================
 # Requirements:
 #   - pull "run_dir", joblib.load the split
@@ -96,12 +104,27 @@ def validate(**context):
 
 def train(**context):
     """Fit the pipeline inside an MLflow run."""
-    # TODO: implement
-    pass
+    import joblib
+
+    from pipeline.training import setup_mlflow, train_model
+
+    ti = context["ti"]
+    run_dir = Path(ti.xcom_pull(task_ids="ingest", key="run_dir"))
+    split = joblib.load(run_dir / "split.joblib")
+    setup_mlflow()
+    model, run_id = train_model(
+        split["X_train"], split["y_train"],
+        model_type=os.getenv("MODEL_TYPE", "hgb"),
+        run_name=f"airflow-{context['ds']}",
+        data_stats=ti.xcom_pull(task_ids="ingest", key="data_stats"),
+        validation_report=ti.xcom_pull(task_ids="validate", key="validation_report"),
+    )
+    joblib.dump(model, run_dir / "model.joblib")
+    ti.xcom_push(key="mlflow_run_id", value=run_id)
 
 
 # =============================================================================
-# TODO 3: Implement evaluate
+# evaluate
 # =============================================================================
 # Requirements:
 #   - load the split and the model from run_dir
@@ -116,12 +139,27 @@ def train(**context):
 
 def evaluate(**context):
     """Score the held-out set and log every metric to the run."""
-    # TODO: implement
-    pass
+    import joblib
+
+    from pipeline.evaluation import evaluate_model
+    from pipeline.training import setup_mlflow
+
+    ti = context["ti"]
+    run_dir = Path(ti.xcom_pull(task_ids="ingest", key="run_dir"))
+    split = joblib.load(run_dir / "split.joblib")
+    model = joblib.load(run_dir / "model.joblib")
+    setup_mlflow()
+    result = evaluate_model(
+        model, split["X_test"], split["y_test"],
+        run_id=ti.xcom_pull(task_ids="train", key="mlflow_run_id"),
+    )
+    (run_dir / "evaluation.json").write_text(json.dumps(result, indent=2))
+    metrics = {key: value for key, value in result.items() if isinstance(value, (int, float))}
+    ti.xcom_push(key="metrics", value=metrics)
 
 
 # =============================================================================
-# TODO 4: Implement decide
+# decide
 # =============================================================================
 # A BranchPythonOperator callable must RETURN THE task_id TO RUN NEXT.
 #
@@ -136,12 +174,17 @@ def evaluate(**context):
 
 def decide(**context):
     """Branch: does this model clear the promotion gate?"""
-    # TODO: implement
-    pass
+    from pipeline.registry import passes_quality_gate
+
+    ti = context["ti"]
+    metrics = ti.xcom_pull(task_ids="evaluate", key="metrics")
+    quality_gate = passes_quality_gate(metrics)
+    ti.xcom_push(key="quality_gate", value=quality_gate)
+    return "promote_model" if quality_gate["passed"] else "skip_promotion"
 
 
 # =============================================================================
-# TODO 5: Implement promote
+# promote
 # =============================================================================
 # Requirements:
 #   - setup_mlflow()
@@ -150,8 +193,17 @@ def decide(**context):
 
 def promote(**context):
     """Register the run and give it the alias it earned."""
-    # TODO: implement
-    pass
+    from pipeline.registry import promote_model
+    from pipeline.training import setup_mlflow
+
+    ti = context["ti"]
+    setup_mlflow()
+    result = promote_model(
+        ti.xcom_pull(task_ids="train", key="mlflow_run_id"),
+        ti.xcom_pull(task_ids="evaluate", key="metrics"),
+    )
+    ti.xcom_push(key="promotion", value=result)
+    return f"{result['model_name']} v{result['version']}: {result['outcome']}"
 
 
 def cleanup(**context):
@@ -194,7 +246,7 @@ with DAG(
     )
 
     # =========================================================================
-    # TODO 6: Wire up the dependency graph
+    # Dependency graph
     # =========================================================================
     # The flow is:
     #     ingest -> validate -> train -> evaluate -> decide
@@ -208,4 +260,5 @@ with DAG(
     # all_success, and a branch always SKIPS one side — so with the default,
     # cleanup would skip too and leave the run directory behind on every run.
 
-    # TODO: define the dependencies
+    t_ingest >> t_validate >> t_train >> t_evaluate >> t_decide
+    t_decide >> [t_promote, t_skip] >> t_cleanup
