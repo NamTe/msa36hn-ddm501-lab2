@@ -33,6 +33,8 @@ x-airflow-common: &airflow-common
     - ./logs:/opt/airflow/logs
     - ./pipeline:/opt/airflow/project/pipeline
     - ./data:/opt/airflow/project/data
+    - ./models:/opt/airflow/project/models
+    - ./artifacts:/opt/airflow/project/artifacts
     - ./artifacts:/opt/airflow/artifacts
   depends_on:
     postgres:
