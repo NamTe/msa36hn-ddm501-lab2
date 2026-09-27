@@ -7,8 +7,7 @@ ALIASES instead — a named pointer to one version, repointed atomically.
     champion    what the serving layer loads
     challenger  a candidate that passed the gate and is waiting for a decision
 
-TODO: Complete find_best_run, register_model, set_alias, passes_quality_gate
-      and promote_model.
+Finds candidate runs, registers versions and assigns aliases after quality checks.
 """
 
 import logging
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # =============================================================================
 # =============================================================================
-# TODO 1: Implement find_best_run
+# find_best_run
 # =============================================================================
 # Return the best run in an experiment by a single metric, as:
 #   {"run_id": str, "metrics": dict, "params": dict, "artifact_uri": str}
@@ -51,12 +50,31 @@ def find_best_run(
     ascending: bool = False,
 ) -> Dict[str, Any]:
     """Best run in an experiment by a single metric."""
-    # TODO: implement
-    pass
+    client = MlflowClient()
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        raise ValueError(f"Experiment '{experiment_name}' does not exist")
+    order = "ASC" if ascending else "DESC"
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        order_by=[f"metrics.{metric} {order}"],
+        max_results=1,
+    )
+    if not runs or metric not in runs[0].data.metrics:
+        raise ValueError(
+            f"No matching runs in experiment '{experiment_name}' for metric '{metric}'"
+        )
+    run = runs[0]
+    return {
+        "run_id": run.info.run_id,
+        "metrics": dict(run.data.metrics),
+        "params": dict(run.data.params),
+        "artifact_uri": run.info.artifact_uri,
+    }
 
 
 # =============================================================================
-# TODO 2: Implement register_model
+# register_model
 # =============================================================================
 # Register a run's model artifact and return the new version number as a string.
 #
@@ -64,12 +82,12 @@ def register_model(
     run_id: str, model_name: str = REGISTERED_MODEL_NAME, artifact_path: str = "model"
 ) -> str:
     """Register a run's model artifact and return the new version number."""
-    # TODO: implement
-    pass
+    version = mlflow.register_model(f"runs:/{run_id}/{artifact_path}", model_name)
+    return str(version.version)
 
 
 # =============================================================================
-# TODO 3: Implement set_alias
+# set_alias
 # =============================================================================
 # Point an alias at a version. This replaces the deprecated
 # client.transition_model_version_stage() — do not use that one.
@@ -77,8 +95,8 @@ def register_model(
 
 def set_alias(model_name: str, version: str, alias: str) -> None:
     """Point an alias at a version."""
-    # TODO: implement
-    pass
+    client = MlflowClient()
+    client.set_registered_model_alias(model_name, alias, version)
 
 
 def get_model_version_by_alias(
@@ -101,7 +119,7 @@ def get_model_version_by_alias(
 
 # =============================================================================
 # =============================================================================
-# TODO 4: Implement passes_quality_gate
+# passes_quality_gate
 # =============================================================================
 # Three independent checks; a model must clear all three:
 #     roc_auc      >= MIN_ROC_AUC
@@ -122,8 +140,22 @@ def get_model_version_by_alias(
 
 def passes_quality_gate(metrics: Dict[str, float]) -> Dict[str, Any]:
     """Does this model clear the promotion bar?"""
-    # TODO: implement
-    pass
+    detail = {
+        "roc_auc": {
+            "passed": bool(metrics.get("roc_auc", 0.0) >= MIN_ROC_AUC),
+            "rule": f"roc_auc >= {MIN_ROC_AUC}",
+        },
+        "pr_auc": {
+            "passed": bool(metrics.get("pr_auc", 0.0) >= MIN_PR_AUC),
+            "rule": f"pr_auc >= {MIN_PR_AUC}",
+        },
+        "fairness_gap": {
+            "passed": bool(metrics.get("fairness_gap", float("inf")) <= MAX_FAIRNESS_GAP),
+            "rule": f"fairness_gap <= {MAX_FAIRNESS_GAP}",
+        },
+    }
+    failed_checks = [name for name, check in detail.items() if not check["passed"]]
+    return {"passed": not failed_checks, "failed_checks": failed_checks, "detail": detail}
 
 
 def beats_champion(
@@ -151,7 +183,7 @@ def beats_champion(
 
 # =============================================================================
 # =============================================================================
-# TODO 5: Implement promote_model
+# promote_model
 # =============================================================================
 # Register the run, then decide what alias it deserves. Three outcomes, and only
 # the first changes what production serves:
@@ -175,8 +207,31 @@ def promote_model(
     model_name: str = REGISTERED_MODEL_NAME,
 ) -> Dict[str, Any]:
     """Register a run, then decide what alias it deserves."""
-    # TODO: implement
-    pass
+    quality_gate = passes_quality_gate(metrics)
+    version = register_model(run_id, model_name)
+    client = MlflowClient()
+    client.set_model_version_tag(
+        model_name, version, "quality_gate",
+        "passed" if quality_gate["passed"] else "failed",
+    )
+
+    outcome = "rejected"
+    if quality_gate["passed"]:
+        if beats_champion(metrics, model_name):
+            outcome = "champion"
+            set_alias(model_name, version, CHAMPION_ALIAS)
+        else:
+            outcome = "challenger"
+            set_alias(model_name, version, CHALLENGER_ALIAS)
+
+    return {
+        "run_id": run_id,
+        "model_name": model_name,
+        "version": version,
+        "outcome": outcome,
+        "quality_gate": quality_gate,
+        "metrics": metrics,
+    }
 
 
 # =============================================================================
