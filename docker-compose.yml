@@ -10,8 +10,7 @@
 #   MLflow   http://localhost:5000
 #   Airflow  http://localhost:8080  (airflow / airflow)
 #
-# TODO: Complete the mlflow service. Everything else is provided — read the
-#       airflow-common block, it is where the interesting decisions are.
+# The airflow-common block shares configuration across the Airflow services.
 # =============================================================================
 x-airflow-common: &airflow-common
   build:
@@ -43,7 +42,7 @@ services:
   # ---------------------------------------------------------------------------
   # MLflow tracking server + model registry
   # ---------------------------------------------------------------------------
-  # TODO: Configure the MLflow tracking server.
+  # MLflow tracking server configuration.
   #
   # Requirements:
   #   image        ghcr.io/mlflow/mlflow:v2.19.0
@@ -67,11 +66,28 @@ services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.19.0
     container_name: ddm501-mlflow
-    # TODO: ports
-    # TODO: volumes
-    # TODO: command
-    # TODO: healthcheck
-    # TODO: restart
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --default-artifact-root
+      - /mlflow/artifacts
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=10).close()"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # Airflow metadata database
