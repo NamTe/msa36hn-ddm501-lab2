@@ -6,7 +6,7 @@ Two kinds of number come out of here, and the second is the one people forget.
   Aggregate metrics   ROC AUC, PR AUC, precision/recall at the decision threshold.
   Sliced metrics      the same numbers computed separately per group.
 
-TODO: Complete compute_metrics, compute_group_metrics and fairness_gap.
+Provides aggregate metrics, group metrics and the fairness gap.
 """
 
 import logging
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# TODO 1: Implement compute_metrics
+# compute_metrics
 # =============================================================================
 # Aggregate metrics at a fixed decision threshold. Return a dict with:
 #   roc_auc, pr_auc, precision, recall, f1, brier,
@@ -45,12 +45,25 @@ def compute_metrics(
     y_true: pd.Series, y_proba: np.ndarray, threshold: float = REVIEW_THRESHOLD
 ) -> Dict[str, float]:
     """Aggregate metrics at a fixed decision threshold."""
-    # TODO: implement
-    pass
+    y_pred = y_proba >= threshold
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "roc_auc": float(roc_auc_score(y_true, y_proba)),
+        "pr_auc": float(average_precision_score(y_true, y_proba)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "brier": float(brier_score_loss(y_true, y_proba)),
+        "true_positives": int(tp),
+        "false_positives": int(fp),
+        "false_negatives": int(fn),
+        "true_negatives": int(tn),
+        "threshold": float(threshold),
+    }
 
 
 # =============================================================================
-# TODO 2: Implement compute_group_metrics
+# compute_group_metrics
 # =============================================================================
 # The same metrics, computed separately for each value of `groups`.
 #
@@ -71,20 +84,34 @@ def compute_group_metrics(
     threshold: float = REVIEW_THRESHOLD,
 ) -> Dict[str, Dict[str, float]]:
     """The same metrics, one set per group value."""
-    # TODO: implement
-    pass
+    result = {}
+    for value in groups.unique():
+        mask = (groups == value).to_numpy()
+        group_y = y_true[mask]
+        n = len(group_y)
+        if n < 50 or len(np.unique(group_y)) < 2:
+            continue
+        group_proba = y_proba[mask]
+        result[str(value)] = {
+            **compute_metrics(group_y, group_proba, threshold),
+            "n": n,
+            "selection_rate": float(np.mean(group_proba >= threshold)),
+        }
+    return result
 
 
 # =============================================================================
-# TODO 3: Implement fairness_gap
+# fairness_gap
 # =============================================================================
 # Largest difference in `key` between any two groups. Return 0.0 when there are
 # fewer than two groups.
 
 def fairness_gap(group_metrics: Dict[str, Dict[str, float]], key: str = "selection_rate") -> float:
     """Largest difference in `key` between any two groups."""
-    # TODO: implement
-    pass
+    if len(group_metrics) < 2:
+        return 0.0
+    values = [metrics[key] for metrics in group_metrics.values()]
+    return float(max(values) - min(values))
 
 
 def evaluate_model(
