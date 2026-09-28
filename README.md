@@ -11,15 +11,14 @@ promoted automatically.
 Same credit default problem as Lab 1. Same data. The question changes from
 *does it serve?* to *can you reproduce it, compare it, and decide about it?*
 
-**This is the starter repository.** The skeleton, the data, `config.py`,
-`data_ingestion.py` and `run_pipeline.py` are done. The stages that make it a
-pipeline are marked `TODO`.
+This repository contains the Lab 2 implementation built from the provided
+starter. Captured execution results are collected in [Submission evidence](#submission-evidence).
 
 ---
 
-## What you have to complete
+## Lab implementation scope
 
-| File | TODOs | What it is |
+| File | Original starter TODOs | What it is |
 |---|---|---|
 | `pipeline/validation.py` | 4 | The three-level data quality gate |
 | `pipeline/preprocessing.py` | 2 | Derived features and the ColumnTransformer |
@@ -31,15 +30,139 @@ pipeline are marked `TODO`.
 | `docker/airflow.Dockerfile` | 3 | User, constrained install, PYTHONPATH |
 | `docker-compose.yml` | 1 | The MLflow service |
 
-Read these before you start — they are the worked examples:
+The starter provided these worked examples:
 `pipeline/config.py`, `pipeline/data_ingestion.py`, `pipeline/run_pipeline.py`,
 the `ingest` and `cleanup` tasks in the DAG, `beats_champion` and the helper
 functions in `registry.py`, and `TestDataIngestion` in the test file.
 
-**You are done when `.github/workflows/smoke.yml` passes.** It runs the pipeline,
+The automated acceptance workflow is `.github/workflows/smoke.yml`. It runs the pipeline,
 asserts a model reached the `@champion` alias, runs the sweep, then installs
 Airflow and parses the DAG. That workflow is the specification; this README is
 the explanation.
+
+---
+
+## Submission evidence
+
+The screenshots below record the observed results for Lab 2 section 5. They are
+stored in [screenshot/](screenshot/) so the evidence can be viewed directly on
+GitHub. Values and registry aliases describe the captured state.
+
+### MLflow setup and CLI pipeline
+
+The setup check connects to `http://localhost:5000`, finds the
+`credit-default-risk` experiment, and confirms that no model is registered yet.
+
+![MLflow setup check before the first pipeline run](screenshot/before-run-pipeline.png)
+
+The first CLI run completes all five stages: ingest, validate, split and train,
+evaluate, and promote. It loads 30,000 rows, splits them into 24,000 training and
+6,000 test rows, and registers HGB as version 1 with the `champion` alias.
+The captured run ID is `105f56d1cfcf4b448f5648bf273062cd`.
+
+| Metric | Captured value |
+|---|---:|
+| ROC AUC | 0.7473 |
+| PR AUC | 0.5444 |
+| Recall | 0.4817 |
+| Fairness gap | 0.0306 |
+
+![Completed CLI pipeline run and initial champion registration](screenshot/1st-run-pipeline.png)
+
+### Experiment sweep leaderboard
+
+The sweep capture shows all seven configurations across logistic regression,
+random forest, and histogram gradient boosting, plus the initial CLI run. It
+also shows the output of `--leaderboard-only --top 5`.
+
+| Sweep run | Model | ROC AUC | PR AUC | Recall | Fairness gap |
+|---|---|---:|---:|---:|---:|
+| logreg-01 | Logistic regression | 0.7511 | 0.5534 | 0.5068 | 0.0558 |
+| logreg-02 | Logistic regression | 0.7511 | 0.5534 | 0.5068 | 0.0544 |
+| rf-04 | Random forest | 0.7502 | 0.5406 | 0.4860 | 0.0352 |
+| hgb-05 | Histogram gradient boosting | 0.7486 | 0.5468 | 0.4832 | 0.0368 |
+| rf-03 | Random forest | 0.7482 | 0.5393 | 0.4832 | 0.0324 |
+| hgb-07 | Histogram gradient boosting | 0.7475 | 0.5435 | 0.4853 | 0.0276 |
+| hgb-06 | Histogram gradient boosting | 0.7473 | 0.5444 | 0.4817 | 0.0306 |
+
+Values are transcribed at the screenshot's four-decimal precision. Logistic
+regression has the highest displayed ROC AUC, PR AUC, and recall, but also the
+largest fairness gaps. All seven configurations pass the configured thresholds
+of ROC AUC >= 0.70, PR AUC >= 0.45, and fairness gap <= 0.10. The leaderboard
+therefore exposes a performance-versus-fairness trade-off even among eligible
+models; ranking first does not itself change the registry alias.
+
+![Seven-configuration sweep leaderboard and top-five results](screenshot/sweep_leaderboard.png)
+
+### Promotion decision
+
+I would promote **logreg-02**. It achieves ROC AUC **0.7511**, PR AUC **0.5534**,
+and recall **0.5068**, while its fairness gap of **0.0544** remains below the
+configured **0.10** limit. It therefore satisfies all three quality checks.
+Compared with the initial HGB champion's ROC AUC of **0.7473**, its improvement
+is approximately **0.0038**, exceeding the required **0.002** promotion margin.
+
+This choice accepts a larger fairness gap than the initial HGB champion's
+**0.0306** in exchange for stronger predictive performance and higher recall.
+The gap remains within the lab's configured tolerance; passing that threshold
+does not mean the model has no demographic disparity. Between the two logistic
+regression configurations, logreg-02 has the smaller fairness gap, while their
+ROC AUC, PR AUC, and recall are tied at the displayed precision.
+
+### MLflow metrics and artifacts
+
+The metrics view shows `logreg-02`, the logistic regression run selected in the
+promotion decision, with run ID `961a96b0d277465b8f36aed9ac1172a7`.
+The displayed scores are ROC AUC **0.75**, PR AUC **0.55**, precision **0.53**,
+recall **0.51**, F1 **0.52**, and Brier score **0.14**. The UI rounds these values
+to two decimal places; the leaderboard above provides four-decimal values for
+ROC AUC, PR AUC, recall, and fairness gap.
+
+![MLflow metrics for the selected logistic regression run logreg-02](screenshot/model-metric.png)
+
+The artifacts view for the same `logreg-02` run links to
+`credit-default-classifier` **version 4**. It shows the fitted `model.pkl`,
+`MLmodel` metadata, input and serving examples, and environment files
+(`conda.yaml`, `python_env.yaml`, and `requirements.txt`). The run also contains
+`evaluation.json`, `feature_columns.json`, and `validation_report.json`.
+The model schema lists **29 input features** and one output. Together, these
+artifacts record the fitted model, expected inputs, dependencies, evaluation,
+and validation evidence needed to inspect and reuse the run.
+
+The screenshot shows artifacts and the input schema; the logged hyperparameter
+table would require a separate run Overview capture or parameter export.
+
+![MLflow artifacts and 29-feature input schema for logreg-02, linked to model version 4](screenshot/model-artifact-and-parameters.png)
+
+### Model registry aliases
+
+The updated registry capture shows seven versions of `credit-default-classifier`,
+with version 5 assigned the `champion` alias and version 7 assigned `challenger`.
+Version 7 is tagged `quality_gate: passed`; version 5 has no visible quality-gate
+tag in this view. Earlier versions remain listed, preserving the registration
+history as aliases move between versions.
+
+![MLflow registry with champion and challenger aliases and quality-gate tags](screenshot/mlflow-model.png)
+
+### Docker stack and Airflow branching
+
+Docker Desktop shows PostgreSQL, MLflow, the Airflow scheduler, and the Airflow
+webserver running. The separate initialization container is stopped.
+
+![Docker Desktop showing the running lab services](screenshot/start-docker-full-stack.png)
+
+The Airflow graph shows `ingest -> validate -> train -> evaluate -> decide`,
+followed by the two promotion branches and `cleanup`. In this capture,
+`promote_model` succeeded and `skip_promotion` was skipped, demonstrating the
+branch decision. **`cleanup` is still queued in the screenshot**, so this image
+does not yet prove that the entire DAG run finished successfully. Capture the
+graph again after `cleanup` and the DAG run report success for the final submission.
+
+![Airflow graph with successful promotion branch, skipped alternative, and queued cleanup](screenshot/airflow.png)
+
+The [Lab 2 report](report/lab2-report.md) covers all five section 5.2 topics:
+pipeline design, experiment analysis, the promotion decision, orchestration,
+and reproducibility.
 
 ---
 
@@ -93,7 +216,7 @@ docker compose up -d --build
 # Airflow  http://localhost:8080   (airflow / airflow)
 ```
 
-Unpause `credit_default_training` in the Airflow UI and trigger it. Seven tasks:
+Unpause `credit_default_training` in the Airflow UI and trigger it. Eight tasks:
 
 | Task | Does |
 |---|---|
@@ -194,6 +317,7 @@ the point of the exercise, and Session 6 gives you the vocabulary for it.
 │   └── airflow.Dockerfile
 ├── data/credit_default.csv Committed — the lab needs no network
 ├── tests/test_pipeline.py
+├── screenshot/            Captured CLI, MLflow, Docker, and Airflow evidence
 ├── docker-compose.yml
 ├── requirements.txt
 └── requirements-airflow.txt
